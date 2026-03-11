@@ -11,7 +11,7 @@
 
 namespace axcore
 {
-inline constexpr AxVersion kVersion = {0u, 2u, 0u, 1u};
+inline constexpr AxVersion kVersion = {1u, 0u, 0u, 1u};
 inline constexpr uint32_t kDefaultHdcDim = 1024u;
 inline constexpr uint32_t kDefaultWorkingMemoryCapacity = 128u;
 inline constexpr uint32_t kDefaultRecentLimit = 256u;
