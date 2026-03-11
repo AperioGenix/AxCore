@@ -242,6 +242,12 @@ AxStatus AxTensor_Bundle(AxConstTensorView lhs, AxConstTensorView rhs, uint32_t 
     return AX_STATUS_OK;
 }
 
+AxStatus AxTensor_BundleOptional(AxConstTensorView lhs, AxConstTensorView rhs, const uint32_t* normalize, AxTensorView output)
+{
+    const uint32_t normalize_flag = normalize != nullptr ? *normalize : 1u;
+    return AxTensor_Bundle(lhs, rhs, normalize_flag, output);
+}
+
 AxStatus AxTensor_Permute(AxConstTensorView input, int32_t steps, AxTensorView output)
 {
     if (input.shape.total == 0u)

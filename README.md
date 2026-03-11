@@ -142,6 +142,7 @@ Key structs used across APIs:
 * `AxTensor_NormalizeL2(AxConstTensorView input, AxTensorView output)`
 * `AxTensor_Subtract(AxConstTensorView lhs, AxConstTensorView rhs, AxTensorView output)`
 * `AxTensor_Bundle(AxConstTensorView lhs, AxConstTensorView rhs, uint32_t normalize, AxTensorView output)`
+* `AxTensor_BundleOptional(AxConstTensorView lhs, AxConstTensorView rhs, const uint32_t* normalize, AxTensorView output)`: `normalize == nullptr` defaults to normalize-on.
 * `AxTensor_Permute(AxConstTensorView input, int32_t steps, AxTensorView output)`
 * `AxTensor_CosineSimilarity(AxConstTensorView lhs, AxConstTensorView rhs, float* out_similarity)`
 

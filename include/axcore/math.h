@@ -16,6 +16,7 @@ AXCORE_API AxStatus AXCORE_CALL AxTensor_Copy(AxConstTensorView input, AxTensorV
 AXCORE_API AxStatus AXCORE_CALL AxTensor_NormalizeL2(AxConstTensorView input, AxTensorView output);
 AXCORE_API AxStatus AXCORE_CALL AxTensor_Subtract(AxConstTensorView lhs, AxConstTensorView rhs, AxTensorView output);
 AXCORE_API AxStatus AXCORE_CALL AxTensor_Bundle(AxConstTensorView lhs, AxConstTensorView rhs, uint32_t normalize, AxTensorView output);
+AXCORE_API AxStatus AXCORE_CALL AxTensor_BundleOptional(AxConstTensorView lhs, AxConstTensorView rhs, const uint32_t* normalize, AxTensorView output);
 AXCORE_API AxStatus AXCORE_CALL AxTensor_Permute(AxConstTensorView input, int32_t steps, AxTensorView output);
 AXCORE_API AxStatus AXCORE_CALL AxTensor_CosineSimilarity(AxConstTensorView lhs, AxConstTensorView rhs, float* out_similarity);
 
