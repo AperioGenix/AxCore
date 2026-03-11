@@ -261,6 +261,58 @@ Useful options:
 * `Consolidation complete`: sleep cycle finished.
 * `Sleep replay ... -> consolidated_trace_*`: replay successfully matched consolidated memory.
 
+## Aperiodic Manifold Experiment
+
+### What The Experiment Is
+
+`aperiodic_manifold_experiment.py` stress-tests AxCore with a deterministic, non-repeating geometry stream (Einstein/Spectre-inspired proxy).
+
+It is designed to probe:
+
+* **Coherent grounding** on unseen holdout patches.
+* **Ambiguity separation** in non-periodic structure.
+* **Memory/routing behavior** under aperiodic ingest.
+* **Consolidation + post-sleep behavior** on the same substrate.
+
+Unlike the world demo, this script intentionally exercises a broad slice of the high-level DLL API in one run (routing, manifold scan, episodic + working memory, geometric gap, projection, sequence similarity, and metabolism).
+
+### How To Run
+
+```powershell
+python .\aperiodic_manifold_experiment.py
+```
+
+For the full stress target mentioned in notes:
+
+```powershell
+python .\aperiodic_manifold_experiment.py --hdc-dim 65536
+```
+
+Useful options:
+
+* `--train-steps`
+* `--holdout-steps`
+* `--holdout-offset`
+* `--patch-side`
+* `--patch-stride`
+* `--scan-candidate-limit`
+* `--working-memory-threshold`
+* `--consolidation-min-fitness`
+* `--entropy-burn-scale`
+* `--collapse-energy-floor`
+
+### How To Read Experiment Output
+
+* `[train]`: in-distribution ingest phase.
+* `[hold]`: unseen far-field holdout phase.
+* `grounding`: manifold grounding score (higher suggests stronger law-consistent structure match).
+* `ambiguity`: best-vs-second-best separation in scan results.
+* `wm_hit_rate`: fraction of training queries that hit working memory.
+* `route_fitness` / `route_cost`: connectome route quality vs metabolic burn pressure.
+* `sequence_similarity`: bundled sequence coherence against current target.
+* `Hypothesis: coherent_grounding=... wide_ambiguity=...`: pass/fail flags against configured thresholds.
+* `Projected ... ranges`: compact manifold projection sanity check.
+
 ## Mathematical Substrate
 
 AxCore uses holographic vector symbolic architecture (VSA):
