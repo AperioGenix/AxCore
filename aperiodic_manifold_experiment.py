@@ -216,6 +216,56 @@ def _normalize_l2(values: array) -> array:
     return array("f", (float(v) * inv for v in values))
 
 
+def _cosine_similarity(lhs: Sequence[float], rhs: Sequence[float]) -> float:
+    if len(lhs) != len(rhs) or not lhs:
+        return 0.0
+    dot = 0.0
+    lhs_sq = 0.0
+    rhs_sq = 0.0
+    for l, r in zip(lhs, rhs):
+        lv = float(l)
+        rv = float(r)
+        dot += lv * rv
+        lhs_sq += lv * lv
+        rhs_sq += rv * rv
+    denom = math.sqrt(lhs_sq) * math.sqrt(rhs_sq)
+    if not (denom > 1.0e-12):
+        return 0.0
+    value = dot / denom
+    if value < -1.0:
+        return -1.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def _perturb_signal(values: Sequence[float], amplitude: float, step: int) -> array:
+    if amplitude <= 0.0:
+        return array("f", (_sanitize(float(v)) for v in values))
+    phase = float(step + 1) * 0.073
+    out = array("f")
+    for i, value in enumerate(values):
+        base = _sanitize(float(value))
+        delta = (
+            (amplitude * math.sin((float(i) + 1.0) * 0.037 + phase))
+            + (amplitude * 0.5 * math.cos((float(i) + 1.0) * 0.011 - (phase * 0.5)))
+        )
+        out.append(_sanitize(base + delta))
+    return out
+
+
+def _parse_float_csv(values_csv: str | None) -> list[float]:
+    if values_csv is None:
+        return []
+    out: list[float] = []
+    for raw in values_csv.split(","):
+        token = raw.strip()
+        if token == "":
+            continue
+        out.append(float(token))
+    return out
+
+
 def prepare_hypervector(values: Sequence[float], target_dim: int) -> array:
     if len(values) <= 0 or target_dim <= 0:
         raise ValueError("prepare_hypervector requires non-empty values and target_dim > 0")
@@ -874,6 +924,8 @@ def run_experiment(args: argparse.Namespace) -> None:
         stride=args.patch_stride,
         seed=args.seed,
     )
+    holdout_threshold_sweep = _parse_float_csv(args.holdout_threshold_sweep)
+    recall_perturb_sweep = _parse_float_csv(args.recall_perturb_sweep)
 
     print(f"AxCore Aperiodic Manifold Experiment | DLL: {dll_path}")
     print(
@@ -893,23 +945,44 @@ def run_experiment(args: argparse.Namespace) -> None:
     train_route_fitness = ScalarStats()
     train_route_cost = ScalarStats()
     train_seq_similarity = ScalarStats()
-    train_recall_similarity = ScalarStats()
+    train_recall_perturbed_similarity = ScalarStats()
+    train_steps_ago_similarity = ScalarStats()
+    train_steps_ago_returned_age_similarity = ScalarStats()
     train_gap_norm = ScalarStats()
     train_entropy = ScalarStats()
     train_wm_hits = 0
     train_wm_queries = 0
+    train_steps_ago_eligible = 0
+    train_steps_ago_found = 0
+    train_steps_ago_exact_age_matches = 0
+    train_steps_ago_age_mismatches = 0
+    train_steps_ago_skipped_history = 0
+    executed_train_steps = 0
 
     hold_grounding = ScalarStats()
     hold_ambiguity = ScalarStats()
     hold_wm_similarity = ScalarStats()
     hold_route_fitness = ScalarStats()
+    hold_wm_hits = 0
+    hold_wm_queries = 0
 
     candidate_history: deque[array] = deque(maxlen=args.candidate_history)
     reference_bank: deque[array] = deque(maxlen=args.reference_bank)
+    full_hvec_history: list[array] = []
+    full_raw_history: list[array] = []
+    holdout_raw_signals: list[array] = []
+
+    representation_discriminator_done = False
+    representation_discriminator_found = 0
+    representation_discriminator_age = -1
+    representation_cos_to_hdc = 0.0
+    representation_cos_to_raw_padded = 0.0
+    representation_cos_prefix_raw = 0.0
 
     try:
         print("\n--- Training Phase (Aperiodic ingest) ---")
         for step in range(args.train_steps):
+            executed_train_steps += 1
             raw_signal, (cx, cy) = generator.sample_step(step)
             next_signal, _ = generator.sample_step(step + 1)
             hvec = prepare_hypervector(raw_signal, args.hdc_dim)
@@ -917,7 +990,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             profile = api.analyze_signal(handle, raw_signal)
             train_entropy.add(float(profile.entropy))
 
-            match, match_values = api.query_working_memory(
+            match, _match_values = api.query_working_memory(
                 handle,
                 raw_signal,
                 threshold=args.working_memory_threshold,
@@ -962,8 +1035,27 @@ def run_experiment(args: argparse.Namespace) -> None:
                 )
 
             api.store_episode(handle, raw_signal)
-            reference_bank.append(hvec)
-            candidate_history.append(hvec)
+            full_raw_history.append(raw_signal)
+            full_hvec_history.append(hvec)
+
+            if (not representation_discriminator_done) and full_hvec_history:
+                discriminator_vals, discriminator_meta = api.recall_steps_ago(handle, steps_ago=0, out_dim=args.hdc_dim)
+                representation_discriminator_done = True
+                if discriminator_meta.found != 0 and discriminator_vals is not None:
+                    representation_discriminator_found = 1
+                    representation_discriminator_age = int(discriminator_meta.age_steps)
+                    representation_cos_to_hdc = _cosine_similarity(discriminator_vals, full_hvec_history[-1])
+
+                    raw_padded = array("f", [0.0] * args.hdc_dim)
+                    copy_len = min(len(raw_signal), args.hdc_dim)
+                    for idx in range(copy_len):
+                        raw_padded[idx] = _sanitize(float(raw_signal[idx]))
+                    raw_padded = _normalize_l2(raw_padded)
+                    representation_cos_to_raw_padded = _cosine_similarity(discriminator_vals, raw_padded)
+
+                    rec_prefix = _normalize_l2(array("f", discriminator_vals[: len(raw_signal)]))
+                    raw_norm = _normalize_l2(array("f", (_sanitize(float(v)) for v in raw_signal)))
+                    representation_cos_prefix_raw = _cosine_similarity(rec_prefix, raw_norm)
 
             if len(candidate_history) >= args.min_candidates_for_scan and ((step + 1) % args.scan_every) == 0:
                 recent = list(candidate_history)[-args.scan_candidate_limit :]
@@ -981,10 +1073,34 @@ def run_experiment(args: argparse.Namespace) -> None:
                 train_seq_similarity.add(seq_sim)
 
             if ((step + 1) % args.recall_interval) == 0:
-                _rec_vals, rec = api.recall_similar(handle, raw_signal, out_dim=args.hdc_dim)
+                perturbed = _perturb_signal(raw_signal, amplitude=args.recall_perturb_amplitude, step=step)
+                _rec_vals, rec = api.recall_similar(handle, perturbed, out_dim=args.hdc_dim)
                 if rec.found != 0:
-                    train_recall_similarity.add(float(rec.similarity))
-                api.recall_steps_ago(handle, steps_ago=args.recall_steps_ago, out_dim=args.hdc_dim)
+                    train_recall_perturbed_similarity.add(float(rec.similarity))
+
+                rec_steps_vals, rec_steps_meta = api.recall_steps_ago(handle, steps_ago=args.recall_steps_ago, out_dim=args.hdc_dim)
+                requested_age = int(args.recall_steps_ago)
+                if requested_age < len(full_hvec_history):
+                    train_steps_ago_eligible += 1
+                    if rec_steps_meta.found != 0 and rec_steps_vals is not None:
+                        train_steps_ago_found += 1
+                        returned_age = int(rec_steps_meta.age_steps)
+                        if returned_age < len(full_hvec_history):
+                            expected_returned = full_hvec_history[-(returned_age + 1)]
+                            returned_score = _cosine_similarity(rec_steps_vals, expected_returned)
+                            train_steps_ago_returned_age_similarity.add(returned_score)
+                        if returned_age == requested_age:
+                            expected_requested = full_hvec_history[-(requested_age + 1)]
+                            requested_score = _cosine_similarity(rec_steps_vals, expected_requested)
+                            train_steps_ago_similarity.add(requested_score)
+                            train_steps_ago_exact_age_matches += 1
+                        else:
+                            train_steps_ago_age_mismatches += 1
+                else:
+                    train_steps_ago_skipped_history += 1
+
+            reference_bank.append(hvec)
+            candidate_history.append(hvec)
 
             api.apply_working_memory_decay(handle, args.decay_factor, args.decay_floor)
             api.consume_metabolism(handle, float(profile.entropy) * args.entropy_burn_scale)
@@ -1002,6 +1118,27 @@ def run_experiment(args: argparse.Namespace) -> None:
                 print("[train] metabolic collapse floor reached; ending training early.")
                 break
 
+        print("\n--- Recall Perturbation Sweep ---")
+        probe_count = min(len(full_raw_history), max(1, int(args.recall_sweep_probes)))
+        recall_probe_set = full_raw_history[-probe_count:] if probe_count > 0 else []
+        if recall_probe_set and recall_perturb_sweep:
+            for amplitude in recall_perturb_sweep:
+                stats = ScalarStats()
+                found_count = 0
+                for probe_index, probe_raw in enumerate(recall_probe_set):
+                    perturbed_probe = _perturb_signal(probe_raw, amplitude=amplitude, step=probe_index)
+                    _vals, rec = api.recall_similar(handle, perturbed_probe, out_dim=args.hdc_dim)
+                    if rec.found != 0:
+                        found_count += 1
+                        stats.add(float(rec.similarity))
+                found_rate = found_count / float(len(recall_probe_set))
+                print(
+                    f"amp={amplitude:.3f} found_rate={found_rate:.3f} "
+                    f"sim_mean={stats.mean:.3f} sim_min={stats.minimum:.3f} sim_max={stats.maximum:.3f}"
+                )
+        else:
+            print("Recall sweep skipped (no probes or empty --recall-perturb-sweep).")
+
         print("\n--- Consolidation ---")
         api.consolidate(handle)
         api.recharge_metabolism(handle, -1.0)
@@ -1010,17 +1147,26 @@ def run_experiment(args: argparse.Namespace) -> None:
 
         print("\n--- Holdout Phase (Unseen far-field patches) ---")
         reference_for_holdout = list(reference_bank)[-args.scan_candidate_limit :]
+        holdout_threshold = (
+            args.working_memory_threshold
+            if args.holdout_working_memory_threshold is None
+            else args.holdout_working_memory_threshold
+        )
+        print(f"Holdout WM threshold: {holdout_threshold:.3f}")
         for i in range(args.holdout_steps):
             raw_signal, (cx, cy) = generator.sample_step(i, phase_offset=args.holdout_offset)
             hvec = prepare_hypervector(raw_signal, args.hdc_dim)
+            holdout_raw_signals.append(raw_signal)
 
             if reference_for_holdout:
                 scan = api.scan_manifold_entropy(handle, hvec, reference_for_holdout)
                 hold_grounding.add(float(scan.grounding_score))
                 hold_ambiguity.add(float(scan.ambiguity_gap))
 
-            match, _ = api.query_working_memory(handle, raw_signal, threshold=-1.0, out_dim=0)
+            match, _ = api.query_working_memory(handle, raw_signal, threshold=holdout_threshold, out_dim=0)
+            hold_wm_queries += 1
             if match.found != 0:
+                hold_wm_hits += 1
                 hold_wm_similarity.add(float(match.similarity))
 
             _routed, candidate, _ = api.route_candidate(
@@ -1038,6 +1184,24 @@ def run_experiment(args: argparse.Namespace) -> None:
                     f"wm_found={int(match.found)} wm_sim={float(match.similarity):.3f} "
                     f"fit={float(candidate.fitness):.3f} strategy={_decode_c_text(candidate.strategy):<16}"
                 )
+
+        print("\n--- Holdout WM Threshold Sweep ---")
+        if holdout_raw_signals and holdout_threshold_sweep:
+            for threshold in holdout_threshold_sweep:
+                sim_stats = ScalarStats()
+                hits = 0
+                for raw_signal in holdout_raw_signals:
+                    sweep_match, _ = api.query_working_memory(handle, raw_signal, threshold=threshold, out_dim=0)
+                    if sweep_match.found != 0:
+                        hits += 1
+                        sim_stats.add(float(sweep_match.similarity))
+                hit_rate = hits / float(len(holdout_raw_signals))
+                print(
+                    f"threshold={threshold:.3f} hit_rate={hit_rate:.3f} "
+                    f"sim_mean={sim_stats.mean:.3f} sim_min={sim_stats.minimum:.3f} sim_max={sim_stats.maximum:.3f}"
+                )
+        else:
+            print("Holdout threshold sweep skipped (no holdout samples or empty --holdout-threshold-sweep).")
 
         print("\n--- Projection + Sequence Readout ---")
         projection_inputs = _sample_for_projection(reference_bank, args.project_samples)
@@ -1059,8 +1223,9 @@ def run_experiment(args: argparse.Namespace) -> None:
         wide_ambiguity = hold_ambiguity.mean >= args.min_expected_ambiguity
 
         print("\n=== Experiment Summary ===")
+        hold_wm_hit_rate = (hold_wm_hits / hold_wm_queries) if hold_wm_queries else 0.0
         print(
-            f"Train: scans={train_grounding.count} grounding={train_grounding.mean:.3f} "
+            f"Train: executed_steps={executed_train_steps}/{args.train_steps} scans={train_grounding.count} grounding={train_grounding.mean:.3f} "
             f"ambiguity={train_ambiguity.mean:.3f} entropy={train_entropy.mean:.3f}"
         )
         print(
@@ -1068,14 +1233,32 @@ def run_experiment(args: argparse.Namespace) -> None:
             f"sequence_similarity={train_seq_similarity.mean:.3f}"
         )
         wm_hit_rate = (train_wm_hits / train_wm_queries) if train_wm_queries else 0.0
+        steps_found_ratio = (train_steps_ago_found / train_steps_ago_eligible) if train_steps_ago_eligible else 0.0
+        steps_exact_ratio = (train_steps_ago_exact_age_matches / train_steps_ago_eligible) if train_steps_ago_eligible else 0.0
         print(
-            f"Train: wm_hit_rate={wm_hit_rate:.3f} recall_similarity={train_recall_similarity.mean:.3f} "
+            f"Train: wm_hit_rate={wm_hit_rate:.3f} recall_perturbed={train_recall_perturbed_similarity.mean:.3f} "
+            f"steps_ago_similarity_exact={train_steps_ago_similarity.mean:.3f} "
+            f"steps_ago_similarity_returned={train_steps_ago_returned_age_similarity.mean:.3f} "
             f"gap_probe_norm={train_gap_norm.mean:.3f}"
         )
         print(
+            f"Train: steps_ago_found_ratio={steps_found_ratio:.3f} "
+            f"steps_ago_exact_age_ratio={steps_exact_ratio:.3f} "
+            f"steps_ago_age_mismatches={train_steps_ago_age_mismatches} "
+            f"steps_ago_skipped_history={train_steps_ago_skipped_history}"
+        )
+        print(
             f"Holdout: scans={hold_grounding.count} grounding={hold_grounding.mean:.3f} "
-            f"ambiguity={hold_ambiguity.mean:.3f} wm_similarity={hold_wm_similarity.mean:.3f} "
+            f"ambiguity={hold_ambiguity.mean:.3f} wm_hit_rate={hold_wm_hit_rate:.3f} "
+            f"wm_similarity={hold_wm_similarity.mean:.3f} "
             f"route_fitness={hold_route_fitness.mean:.3f}"
+        )
+        print(
+            f"Representation discriminator: found={representation_discriminator_found} "
+            f"returned_age={representation_discriminator_age} dims(raw={generator.raw_dim}, hdc={args.hdc_dim}) "
+            f"cos(return,hdc_expected)={representation_cos_to_hdc:.3f} "
+            f"cos(return,raw_padded_hdc)={representation_cos_to_raw_padded:.3f} "
+            f"cos(return_prefix,raw)={representation_cos_prefix_raw:.3f}"
         )
         print(
             f"Hypothesis: coherent_grounding={int(coherent_grounding)} "
@@ -1116,10 +1299,40 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--promote-every", type=int, default=2)
     parser.add_argument("--working-memory-threshold", type=float, default=0.20)
+    parser.add_argument(
+        "--holdout-working-memory-threshold",
+        type=float,
+        default=None,
+        help="Holdout WM query threshold. Defaults to --working-memory-threshold when omitted.",
+    )
+    parser.add_argument(
+        "--holdout-threshold-sweep",
+        type=str,
+        default="0.20,0.35,0.50,0.65",
+        help="Comma-separated thresholds for holdout WM sweep.",
+    )
     parser.add_argument("--capture-match-vectors", action="store_true")
 
     parser.add_argument("--recall-interval", type=int, default=8)
     parser.add_argument("--recall-steps-ago", type=int, default=12)
+    parser.add_argument(
+        "--recall-perturb-amplitude",
+        type=float,
+        default=0.035,
+        help="Amplitude for deterministic perturbation used in recall_similar probes.",
+    )
+    parser.add_argument(
+        "--recall-perturb-sweep",
+        type=str,
+        default="0.01,0.03,0.05,0.10,0.20",
+        help="Comma-separated perturb amplitudes for recall degradation sweep.",
+    )
+    parser.add_argument(
+        "--recall-sweep-probes",
+        type=int,
+        default=8,
+        help="How many latest training signals to use for perturbation sweep.",
+    )
     parser.add_argument("--sequence-window", type=int, default=8)
     parser.add_argument("--sequence-interval", type=int, default=8)
 
