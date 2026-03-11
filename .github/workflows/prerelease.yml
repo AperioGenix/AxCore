@@ -1,0 +1,124 @@
+name: Build And Publish Prerelease
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (example: v0.2.0-rc1)"
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $platform = "${{ matrix.platform }}"
+          $artifactName = "AxCore-$env:RELEASE_TAG-$platform"
+
+          $stagingRoot = Join-Path $PWD "staging"
+          $packageRoot = Join-Path $stagingRoot $artifactName
+          $binDir = Join-Path $packageRoot "bin"
+          $libDir = Join-Path $packageRoot "lib"
+
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $libDir | Out-Null
+
+          Copy-Item README.md (Join-Path $packageRoot "README.md")
+          Copy-Item world_model_demo.py (Join-Path $packageRoot "world_model_demo.py")
+          Copy-Item -Recurse include (Join-Path $packageRoot "include")
+
+          if ($platform -eq "windows") {
+            $shared = Get-ChildItem build -Recurse -File -Filter axcore.dll | Select-Object -First 1
+            if (-not $shared) { throw "axcore.dll not found after build." }
+            Copy-Item $shared.FullName (Join-Path $binDir "axcore.dll")
+
+            $importLib = Get-ChildItem build -Recurse -File -Filter axcore.lib | Select-Object -First 1
+            if ($importLib) {
+              Copy-Item $importLib.FullName (Join-Path $libDir "axcore.lib")
+            }
+          }
+          elseif ($platform -eq "linux") {
+            $shared = Get-ChildItem build -Recurse -File | Where-Object { $_.Name -like "libaxcore.so*" } | Select-Object -First 1
+            if (-not $shared) { throw "libaxcore.so not found after build." }
+            Copy-Item $shared.FullName (Join-Path $binDir "libaxcore.so")
+          }
+          elseif ($platform -eq "macos") {
+            $shared = Get-ChildItem build -Recurse -File -Filter libaxcore.dylib | Select-Object -First 1
+            if (-not $shared) { throw "libaxcore.dylib not found after build." }
+            Copy-Item $shared.FullName (Join-Path $binDir "libaxcore.dylib")
+          }
+          else {
+            throw "Unsupported platform: $platform"
+          }
+
+          $zipPath = Join-Path $stagingRoot "$artifactName.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path $packageRoot -DestinationPath $zipPath -Force
+
+          "zip_path=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: prerelease-${{ matrix.platform }}
+          path: ${{ steps.package.outputs.zip_path }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish Prerelease
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: prerelease-*
+          merge-multiple: true
+
+      - name: Publish GitHub Prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: AxCore ${{ env.RELEASE_TAG }} Prerelease
+          prerelease: true
+          generate_release_notes: true
+          files: release-assets/*.zip
