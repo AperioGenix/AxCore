@@ -1,0 +1,15 @@
+build/
+*.tsp
+__pycache__/
+*.csv
+*.txt
+imgui.ini
+*.crdownload
+*.png
+*.gguf
+*.json
+.gitignore
+*.npz
+*.npy
+*.zip
+/old_tests
