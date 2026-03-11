@@ -1,6 +1,6 @@
 # AxCore
 
-AxCore is a zero-dependency, C++20 kernel for High-Dimensional Computing (HDC). It treats incoming data as tensors and projects them into a geometric manifold for analysis, memory, and routing.
+AxCore is a zero-dependency C++20 HDC runtime/library for tensor analysis, holographic memory, and geometric routing. It is a native shared library API (not an operating system kernel).
 
 ## Core Architecture
 
