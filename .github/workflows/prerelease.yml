@@ -54,24 +54,16 @@ jobs:
           $stagingRoot = Join-Path $PWD "staging"
           $packageRoot = Join-Path $stagingRoot $artifactName
           $binDir = Join-Path $packageRoot "bin"
-          $libDir = Join-Path $packageRoot "lib"
 
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $libDir | Out-Null
 
           Copy-Item README.md (Join-Path $packageRoot "README.md")
           Copy-Item world_model_demo.py (Join-Path $packageRoot "world_model_demo.py")
-          Copy-Item -Recurse include (Join-Path $packageRoot "include")
 
           if ($platform -eq "windows") {
             $shared = Get-ChildItem build -Recurse -File -Filter axcore.dll | Select-Object -First 1
             if (-not $shared) { throw "axcore.dll not found after build." }
             Copy-Item $shared.FullName (Join-Path $binDir "axcore.dll")
-
-            $importLib = Get-ChildItem build -Recurse -File -Filter axcore.lib | Select-Object -First 1
-            if ($importLib) {
-              Copy-Item $importLib.FullName (Join-Path $libDir "axcore.lib")
-            }
           }
           elseif ($platform -eq "linux") {
             $shared = Get-ChildItem build -Recurse -File | Where-Object { $_.Name -like "libaxcore.so*" } | Select-Object -First 1

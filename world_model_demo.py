@@ -16,6 +16,7 @@ import argparse
 import ctypes as ct
 import math
 import random
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -441,25 +442,50 @@ class AxCoreBindings:
         return match
 
 
+def _shared_library_names() -> list[str]:
+    if sys.platform.startswith("win"):
+        return ["axcore.dll"]
+    if sys.platform == "darwin":
+        return ["libaxcore.dylib"]
+    return ["libaxcore.so"]
+
+
 def resolve_dll_path(explicit_path: str | None) -> Path:
+    names = _shared_library_names()
     if explicit_path:
-        dll = Path(explicit_path).expanduser().resolve()
-        if dll.exists():
-            return dll
-        raise FileNotFoundError(f"AxCore DLL not found: {dll}")
+        path = Path(explicit_path).expanduser().resolve()
+        if path.is_file():
+            return path
+        if path.is_dir():
+            for name in names:
+                candidate = path / name
+                if candidate.exists():
+                    return candidate
+        raise FileNotFoundError(f"AxCore shared library not found at: {path}")
 
     base = Path(__file__).resolve().parent
-    candidates = [
-        base / "build" / "axcore.dll",
-        Path.cwd() / "build" / "axcore.dll",
-        base / "axcore.dll",
+    roots = [
+        base / "bin",
+        base / "build",
+        base / "build" / "Release",
+        base,
+        Path.cwd() / "bin",
+        Path.cwd() / "build",
+        Path.cwd() / "build" / "Release",
+        Path.cwd(),
     ]
+    candidates: list[Path] = []
+    for root in roots:
+        for name in names:
+            candidates.append(root / name)
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    searched = "\n".join(f"  - {path}" for path in candidates)
+    names_list = ", ".join(names)
     raise FileNotFoundError(
-        "Could not locate axcore.dll. Expected one of:\n"
-        + "\n".join(f"  - {path}" for path in candidates)
+        f"Could not locate AxCore shared library ({names_list}). Searched:\n{searched}"
     )
 
 
@@ -485,7 +511,7 @@ def run_axcore_world_model(args: argparse.Namespace) -> None:
 
     environments = ["Monolith (Sine)", "Butterfly (Chaos)", "Gravity Well"]
 
-    print(f"AxCore World-Model Demo | DLL: {dll_path}")
+    print(f"AxCore World-Model Demo | Library: {dll_path}")
     print(
         f"HDC={args.hdc_dim} | Raw={args.raw_dim} | WM={args.working_memory_capacity} | "
         f"Frames/Env={args.frames_per_environment} | ConsolidationMinFitness={args.consolidation_min_fitness:.2f}"
@@ -567,7 +593,7 @@ def run_axcore_world_model(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AxCore World-Model release demo.")
-    parser.add_argument("--dll", type=str, default=None, help="Path to axcore.dll")
+    parser.add_argument("--dll", type=str, default=None, help="Path to AxCore shared library file (or folder containing it)")
     parser.add_argument("--hdc-dim", type=int, default=1024)
     parser.add_argument("--raw-dim", type=int, default=256)
     parser.add_argument("--working-memory-capacity", type=int, default=128)
